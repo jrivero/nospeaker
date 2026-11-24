@@ -524,6 +524,67 @@ func sweep(seconds: Double = 6) {
     }
 }
 
+/// A 56k modem dialing out: dial tone, DTMF digits, ringback, the 2100 Hz answer tone, V.21 FSK chirps from
+/// both ends, the line-probing "bongs", then the scrambled hiss of training. Approximate: the motor can't do
+/// phase reversals or real QAM, so those become level wobble and random tone bursts.
+func modem(number: String = "5551234") {
+    let start = mach_absolute_time()
+    var t = 0.0
+    func hold(_ tones: [(hz: Double, amp: Double)], _ seconds: Double, level: Float = 1, seg: Double = 0.02) {
+        let end = t + seconds
+        while t < end - 1e-6 && !interrupted() {
+            let s = min(seg, end - t)
+            if !tones.isEmpty { play(tones, ms: s * 1000, level: level) }
+            t += s
+            waitUntil(start + UInt64(t * ticksPerSecond))
+        }
+    }
+    func say(_ s: String) { print(s); fflush(stdout) }
+
+    say("ATDT\(number)")
+    hold([(350, 1), (440, 1)], 1.2)
+    let rows = [697.0, 770, 852, 941], cols = [1209.0, 1336, 1477]
+    let keys = Array("123456789*0#")
+    for ch in number {
+        guard let k = keys.firstIndex(of: ch) else { continue }
+        hold([(rows[k / 3], 1), (cols[k % 3], 1)], 0.09)
+        hold([], 0.06)
+    }
+    hold([], 0.6)
+    hold([(440, 1), (480, 1)], 1.6, level: 0.6)                   // ringback
+    hold([], 0.4)
+
+    say("CARRIER")
+    let ans = mach_absolute_time()
+    while Double(mach_absolute_time() - ans) / ticksPerSecond < 2.4 && !interrupted() {
+        let u = Double(mach_absolute_time() - ans) / ticksPerSecond
+        hold([(2100, 1)], 0.01, level: Float(0.8 + 0.2 * sin(2 * .pi * 15 * u)), seg: 0.01)   // ANSam: 15 Hz AM
+    }
+
+    say("PROTOCOL: V.8")
+    for _ in 0..<Int(1.4 * 300) where !interrupted() {                // 300 baud, both channels at once
+        hold([(Bool.random() ? 980 : 1180, 1), (Bool.random() ? 1650 : 1850, 1)], 1.0 / 300, seg: 1.0 / 300)
+    }
+
+    say("PROBING LINE")
+    for f in [1200.0, 2400, 1200, 600] {                               // the "bing-bong"
+        hold([(f, 1)], 0.18)
+        hold([], 0.05)
+    }
+    hold(stride(from: 150.0, through: 3750, by: 300).map { ($0, 1) }, 0.6)   // probe comb, L1/L2
+    hold([], 0.15)
+
+    say("TRAINING")
+    for (seconds, lo, hi) in [(1.2, 300.0, 3500.0), (0.25, 0, 0), (1.8, 600, 3800), (0.2, 0, 0), (1.5, 300, 3500)] {
+        if hi == 0 { hold([], seconds); continue }
+        let end = t + seconds
+        while t < end && !interrupted() {                              // hiss: random tones every 4 ms
+            hold((0..<3).map { _ in (Double.random(in: lo...hi), 1) }, 0.004, level: 0.9, seg: 0.004)
+        }
+    }
+    say("CONNECT 56000")
+}
+
 func talk(_ frames: [Frame], text: String) {
     guard !frames.isEmpty else { return }
     let total = Double(frames.count) * hop
@@ -1533,6 +1594,7 @@ if flag("--help") || flag("-h") {
       nospeaker                         the show (space skips a part, q goes to the end)
       nospeaker "any words"             just say something
       nospeaker --sweep                 a rising tone, 100 Hz to 4 kHz
+      nospeaker --modem                 a 56k modem dialing in
       --voice Daniel                    any voice from `say -v '?'`
       --dark                            white on black instead of black on white
       --plain                           no visuals
@@ -1550,6 +1612,7 @@ if let v = voiceName, !voiceExists(v) {
 applyTheme(light: !flag("--dark"))
 let plain = flag("--plain")
 let wantsSweep = flag("--sweep")
+let wantsModem = flag("--modem")
 if let unknown = args.first(where: { $0.hasPrefix("-") }) { usageError("\"\(unknown)\" isn't an option.") }
 
 signal(SIGINT) { _ in requestEnd() }
@@ -1559,8 +1622,9 @@ atexit { restoreTerminal() }
 motor = openMotor()
 motorPointer = Unmanaged.passUnretained(motor! as AnyObject).toOpaque()
 
-if wantsSweep || !args.isEmpty {
+if wantsSweep || wantsModem || !args.isEmpty {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+    if wantsModem { modem() }
     if wantsSweep { print("sweeping 100 Hz → 4 kHz…"); sweep(seconds: 5) }
     if !args.isEmpty {
         let text = args.joined(separator: " ")

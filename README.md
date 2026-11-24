@@ -64,6 +64,7 @@ cd nospeaker
 ./nospeaker "hello there"            say anything
 ./nospeaker --voice Daniel "hello"   in another macOS voice
 ./nospeaker --sweep                  a rising tone, 100 Hz to 4 kHz
+./nospeaker --modem                  a 56k modem dialing in
 
 --dark                               white on black
 --plain                              no visuals, plain text
